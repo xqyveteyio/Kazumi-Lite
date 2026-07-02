@@ -536,6 +536,15 @@ abstract class _VideoPageController with Store {
     PlaybackInitParams params,
     _AsyncSession session,
   ) async {
+    // 弹幕来源全部关闭时跳过自动加载，避免无意义的请求与「加载失败」提示。
+    final bool anyDanmakuSourceEnabled =
+        GStorage.getSetting(SettingsKeys.danmakuBiliBiliSource) ||
+            GStorage.getSetting(SettingsKeys.danmakuGamerSource) ||
+            GStorage.getSetting(SettingsKeys.danmakuDanDanSource);
+    if (!anyDanmakuSourceEnabled) {
+      playerController.danmaku.finishDanmakuLoad(disableDanmaku: true);
+      return;
+    }
     final danmakuSession = _danmakuSessions.begin();
     playerController.danmaku.beginDanmakuLoad();
     try {

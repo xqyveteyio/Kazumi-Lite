@@ -1,0 +1,70 @@
+name: "release-android-lite"
+
+# 精简版发布流程：只构建 Android，手动触发。
+# release 版沿用项目自带的 debug 签名（android/app/build.gradle），
+# 产出的 APK 可直接安装，无需任何 keystore / 签名 secrets。
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本标记（仅用于产物命名，例如 v2.1.8-lite）"
+        required: false
+        default: "dev"
+
+jobs:
+  build-android:
+    name: "Build Android APK (lite)"
+    runs-on: "ubuntu-latest"
+    permissions:
+      contents: read
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2.16.0
+        id: flutter-action
+        with:
+          channel: stable
+          flutter-version-file: pubspec.yaml
+
+      - name: Get Flutter dependencies
+        run: flutter pub get
+        shell: bash
+
+      - name: Remove build id
+        run: sed -i -e 's/-Wl,/-Wl,--build-id=none,/' ${{ steps.flutter-action.outputs.PUB-CACHE-PATH }}/hosted/pub.dev/jni-*/src/CMakeLists.txt
+        shell: bash
+
+      # 弹幕 / 番剧数据凭据可选：仓库里配了同名 secrets 就会带上，没配就是空（弹幕功能不可用，其余正常）。
+      - name: Build Android APK (split per ABI)
+        run: >-
+          flutter build apk --release --split-per-abi
+          --dart-define=DANDANAPI_APPID=${{ secrets.DANDANAPI_APPID }}
+          --dart-define=DANDANAPI_KEY=${{ secrets.DANDANAPI_KEY }}
+          --dart-define=KAZUMI_APPID=${{ secrets.KAZUMI_APPID }}
+          --dart-define=KAZUMI_KEY=${{ secrets.KAZUMI_KEY }}
+        shell: bash
+
+      - name: Collect APKs
+        run: |
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
+             dist/Kazumi_lite_android_${{ github.event.inputs.version }}_arm64-v8a.apk
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk \
+             dist/Kazumi_lite_android_${{ github.event.inputs.version }}_armeabi-v7a.apk
+          cp build/app/outputs/flutter-apk/app-x86_64-release.apk \
+             dist/Kazumi_lite_android_${{ github.event.inputs.version }}_x86_64.apk
+        shell: bash
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kazumi-lite-android-${{ github.event.inputs.version }}
+          path: dist/*.apk

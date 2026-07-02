@@ -497,7 +497,9 @@ class _PlayerItemState extends State<PlayerItem>
     if (playerController.panel.brightnessSeeking) {
       playerController.panel.brightnessSeeking = false;
     }
-    _scheduleAdjustmentHudHide();
+    _cancelAdjustmentHudHideTimer();
+    playerController.panel.showVolume = false;
+    playerController.panel.showBrightness = false;
   }
 
   Future<void> skipOP() async {
