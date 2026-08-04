@@ -1,8 +1,8 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_mobx/flutter_mobx.dart';
-import 'package:flutter_modular/flutter_modular.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:kazumi/bean/widget/play_pause_icon.dart';
 import 'package:kazumi/pages/player/controller/player_aspect_ratio.dart';
 import 'package:kazumi/pages/player/controller/player_super_resolution.dart';
 import 'package:kazumi/pages/player/player_panel_hold.dart';
@@ -14,7 +14,6 @@ import 'package:flutter/services.dart';
 import 'package:kazumi/services/player/remote.dart';
 import 'package:kazumi/pages/settings/danmaku/danmaku_settings_sheet.dart';
 import 'package:kazumi/utils/constants.dart';
-import 'package:kazumi/services/storage/storage.dart';
 import 'package:kazumi/bean/appbar/drag_to_move_bar.dart' as dtb;
 import 'package:audio_video_progress_bar/audio_video_progress_bar.dart';
 import 'package:kazumi/bean/widget/embedded_native_control_area.dart';
@@ -26,6 +25,7 @@ class SmallestPlayerItemPanel extends StatefulWidget {
   const SmallestPlayerItemPanel({
     super.key,
     required this.playerController,
+    required this.videoPageController,
     required this.onBackPressed,
     required this.setPlaybackSpeed,
     required this.showDanmakuSwitch,
@@ -34,18 +34,18 @@ class SmallestPlayerItemPanel extends StatefulWidget {
     required this.handleProgressBarSeek,
     required this.handleSuperResolutionChange,
     required this.panelVisibilityController,
-    required this.keyboardFocus,
     required this.acquirePlayerPanelHold,
+    required this.onMenuVisibilityChanged,
     required this.handleDanmaku,
     required this.skipOP,
     required this.showVideoInfo,
-    required this.showSyncPlayRoomCreateDialog,
-    required this.showSyncPlayEndPointSwitchDialog,
+    required this.showSyncPlayPanel,
     required this.pauseForTimedShutdown,
     this.disableAnimations = false,
   });
 
   final PlayerController playerController;
+  final VideoPageController videoPageController;
   final void Function(BuildContext) onBackPressed;
   final Future<void> Function(double) setPlaybackSpeed;
   final void Function() showDanmakuSwitch;
@@ -57,11 +57,10 @@ class SmallestPlayerItemPanel extends StatefulWidget {
   final Future<void> Function(SuperResolutionMode mode)
       handleSuperResolutionChange;
   final AnimationController panelVisibilityController;
-  final FocusNode keyboardFocus;
   final PlayerPanelHold Function() acquirePlayerPanelHold;
+  final ValueChanged<bool> onMenuVisibilityChanged;
   final void Function() showVideoInfo;
-  final void Function() showSyncPlayRoomCreateDialog;
-  final void Function() showSyncPlayEndPointSwitchDialog;
+  final void Function() showSyncPlayPanel;
   final VoidCallback pauseForTimedShutdown;
   final bool disableAnimations;
 
@@ -71,28 +70,18 @@ class SmallestPlayerItemPanel extends StatefulWidget {
 }
 
 class _SmallestPlayerItemPanelState extends State<SmallestPlayerItemPanel> {
-  late bool haEnable;
   late Animation<Offset> topOffsetAnimation;
   late Animation<Offset> bottomOffsetAnimation;
-  late Animation<Offset> leftOffsetAnimation;
-  final VideoPageController videoPageController =
-      Modular.get<VideoPageController>();
+  late final VideoPageController videoPageController =
+      widget.videoPageController;
   late final PlayerController playerController;
-  final TextEditingController textController = TextEditingController();
 
-  // SVG Caches
   String? cachedSvgString;
   Widget? cachedDanmakuOnIcon;
   Widget? cachedDanmakuOffIcon;
 
   static const double _danmakuIconSize = 24.0;
   static const double _loadingIndicatorStrokeWidth = 2.0;
-
-  @override
-  void dispose() {
-    textController.dispose();
-    super.dispose();
-  }
 
   void showForwardChange() {
     KazumiDialog.show(builder: (context) {
@@ -103,11 +92,10 @@ class _SmallestPlayerItemPanelState extends State<SmallestPlayerItemPanel> {
             builder: (BuildContext context, StateSetter setState) {
           return TextField(
             inputFormatters: [
-              FilteringTextInputFormatter.digitsOnly, // 只允许输入数字
+              FilteringTextInputFormatter.digitsOnly,
             ],
             decoration: InputDecoration(
-              floatingLabelBehavior:
-                  FloatingLabelBehavior.never, // 控制label的显示方式
+              floatingLabelBehavior: FloatingLabelBehavior.never,
               labelText: playerController.playback.buttonSkipTime.toString(),
             ),
             onChanged: (value) {
@@ -157,14 +145,6 @@ class _SmallestPlayerItemPanelState extends State<SmallestPlayerItemPanel> {
       parent: widget.panelVisibilityController,
       curve: Curves.easeInOut,
     ));
-    leftOffsetAnimation = Tween<Offset>(
-      begin: const Offset(1.0, 0.0),
-      end: const Offset(0.0, 0.0),
-    ).animate(CurvedAnimation(
-      parent: widget.panelVisibilityController,
-      curve: Curves.easeInOut,
-    ));
-    haEnable = GStorage.getSetting(SettingsKeys.hAenable);
     cacheSvgIcons();
   }
 
@@ -498,39 +478,45 @@ class _SmallestPlayerItemPanelState extends State<SmallestPlayerItemPanel> {
     return Row(
       children: [
         IconButton(
-          color: Colors.white,
-          icon: Icon(playerController.playback.playing
-              ? Icons.pause_rounded
-              : Icons.play_arrow_rounded),
+          icon: PlayPauseIcon(
+            iconColor: Colors.white,
+            playing: playerController.playback.playing,
+          ),
           tooltip: playerController.playback.playing ? '暂停' : '播放',
           onPressed: () {
             playerController.playOrPause();
           },
         ),
+        // Position reads stay inside these narrow Observers so the 1s progress
+        // tick rebuilds only the bar and time text, not the whole bottom bar.
         Expanded(
-          child: ProgressBar(
-            thumbRadius: 8,
-            thumbGlowRadius: 18,
-            timeLabelLocation: TimeLabelLocation.none,
-            progress: playerController.playback.currentPosition,
-            buffered: playerController.playback.buffer,
-            total: playerController.playback.duration,
-            onSeek: widget.handleProgressBarSeek,
-            onDragStart: (_) => widget.handleProgressBarDragStart(),
-            onDragUpdate: (details) => playerController.seeking
-                .updateInteractiveSeek(details.timeStamp),
-          ),
+          child: Observer(builder: (context) {
+            return ProgressBar(
+              thumbRadius: 8,
+              thumbGlowRadius: 18,
+              timeLabelLocation: TimeLabelLocation.none,
+              progress: playerController.playback.currentPosition,
+              buffered: playerController.playback.buffer,
+              total: playerController.playback.duration,
+              onSeek: widget.handleProgressBarSeek,
+              onDragStart: (_) => widget.handleProgressBarDragStart(),
+              onDragUpdate: (details) => playerController.seeking
+                  .updateInteractiveSeek(details.timeStamp),
+            );
+          }),
         ),
-        Text(
-          "    ${durationToString(playerController.playback.currentPosition)} / ${durationToString(playerController.playback.duration)}",
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 12.0,
-            fontFeatures: [
-              FontFeature.tabularFigures(),
-            ],
-          ),
-        ),
+        Observer(builder: (context) {
+          return Text(
+            "    ${durationToString(playerController.playback.currentPosition)} / ${durationToString(playerController.playback.duration)}",
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12.0,
+              fontFeatures: [
+                FontFeature.tabularFigures(),
+              ],
+            ),
+          );
+        }),
         (!videoPageController.isPip)
             ? IconButton(
                 color: Colors.white,
@@ -559,11 +545,9 @@ class _SmallestPlayerItemPanelState extends State<SmallestPlayerItemPanel> {
               widget.onBackPressed(context);
             },
           ),
-          // 拖动条
           const Expanded(
             child: dtb.DragToMoveArea(child: SizedBox(height: 40)),
           ),
-          // 跳过
           forwardIcon(),
           if (isDesktop() || Platform.isAndroid)
             IconButton(
@@ -572,7 +556,8 @@ class _SmallestPlayerItemPanelState extends State<SmallestPlayerItemPanel> {
                     if (videoPageController.isPip) {
                       await PipUtils.exitDesktopPIPWindow();
                     } else {
-                      // 进入画中画时使用播放源比例，避免窗口比例与视频比例不一致产生黑边
+                      // Size the PiP window to the video aspect ratio to
+                      // avoid letterboxing.
                       await PipUtils.enterDesktopPIPWindow(
                         width: playerController.debug.playerWidth,
                         height: playerController.debug.playerHeight,
@@ -603,15 +588,14 @@ class _SmallestPlayerItemPanelState extends State<SmallestPlayerItemPanel> {
                 tooltip: '画中画',
                 icon:
                     const Icon(Icons.picture_in_picture, color: Colors.white)),
-          // 弹幕开关
           _buildDanmakuToggleButton(context),
-          // 追番
           PlayerPanelHoldCollectButton(
             acquirePlayerPanelHold: widget.acquirePlayerPanelHold,
             bangumiItem: videoPageController.bangumiItem,
           ),
           PlayerPanelHoldMenuAnchor(
             acquirePlayerPanelHold: widget.acquirePlayerPanelHold,
+            onVisibilityChanged: widget.onMenuVisibilityChanged,
             consumeOutsideTap: true,
             builder: (BuildContext context, MenuController controller,
                 Widget? child) {
@@ -731,70 +715,10 @@ class _SmallestPlayerItemPanelState extends State<SmallestPlayerItemPanel> {
                   ),
                 ),
               ),
-              SubmenuButton(
-                menuChildren: [
-                  MenuItemButton(
-                    child: Container(
-                      height: 48,
-                      constraints: BoxConstraints(minWidth: 112),
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                            "当前房间: ${playerController.syncplay.syncplayRoom == '' ? '未加入' : playerController.syncplay.syncplayRoom}"),
-                      ),
-                    ),
-                  ),
-                  MenuItemButton(
-                    child: Container(
-                      height: 48,
-                      constraints: BoxConstraints(minWidth: 112),
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                            "网络延时: ${playerController.syncplay.syncplayClientRtt}ms"),
-                      ),
-                    ),
-                  ),
-                  MenuItemButton(
-                    onPressed: () {
-                      widget.showSyncPlayRoomCreateDialog();
-                    },
-                    child: Container(
-                      height: 48,
-                      constraints: BoxConstraints(minWidth: 112),
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text("加入房间"),
-                      ),
-                    ),
-                  ),
-                  MenuItemButton(
-                    onPressed: () {
-                      widget.showSyncPlayEndPointSwitchDialog();
-                    },
-                    child: Container(
-                      height: 48,
-                      constraints: BoxConstraints(minWidth: 112),
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text("切换服务器"),
-                      ),
-                    ),
-                  ),
-                  MenuItemButton(
-                    onPressed: () async {
-                      await playerController.exitSyncPlayRoom();
-                    },
-                    child: Container(
-                      height: 48,
-                      constraints: BoxConstraints(minWidth: 112),
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text("断开连接"),
-                      ),
-                    ),
-                  ),
-                ],
+              MenuItemButton(
+                onPressed: () {
+                  widget.showSyncPlayPanel();
+                },
                 child: Container(
                   height: 48,
                   constraints: BoxConstraints(minWidth: 112),
@@ -885,7 +809,6 @@ class _SmallestPlayerItemPanelState extends State<SmallestPlayerItemPanel> {
                   ),
                 ),
               ),
-              // 定时关闭
               SubmenuButton(
                 menuChildren: [
                   MenuItemButton(

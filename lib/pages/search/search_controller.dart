@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:flutter_modular/flutter_modular.dart';
 import 'package:mobx/mobx.dart';
 import 'package:kazumi/modules/bangumi/bangumi_item.dart';
 import 'package:kazumi/modules/collect/collect_type.dart';
@@ -17,8 +16,20 @@ part 'search_controller.g.dart';
 class SearchPageController = _SearchPageController with _$SearchPageController;
 
 abstract class _SearchPageController with Store {
-  final _collectRepository = Modular.get<ICollectRepository>();
-  final _searchHistoryRepository = Modular.get<ISearchHistoryRepository>();
+  static const int _searchPageSize = 20;
+  static const int _maxPagesPerSearch = 3;
+
+  _SearchPageController(
+    this._collectRepository,
+    this._searchHistoryRepository,
+  );
+
+  final ICollectRepository _collectRepository;
+  final ISearchHistoryRepository _searchHistoryRepository;
+
+  int _searchOffset = 0;
+
+  bool hasMoreSearchResults = true;
 
   @observable
   bool isLoading = false;
@@ -58,6 +69,8 @@ abstract class _SearchPageController with Store {
   Future<void> searchBangumi(String input, {String type = 'add'}) async {
     if (type != 'add') {
       bangumiList.clear();
+      _searchOffset = 0;
+      hasMoreSearchResults = true;
       bool privateMode = _collectRepository.getPrivateMode();
       if (!privateMode) {
         // 检查是否已满，删除最旧的记录
@@ -84,22 +97,45 @@ abstract class _SearchPageController with Store {
         if (item != null) {
           bangumiList.add(item);
         }
+        hasMoreSearchResults = false;
         isLoading = false;
         isTimeOut = bangumiList.isEmpty;
         return;
       }
     }
-    final result = await BangumiApi.bangumiSearch(filterState.keyword,
-        tags: filterState.tags,
-        offset: bangumiList.length,
-        sort: filterState.sort,
-        dateRange: filterState.effectiveDateRange,
-        rankRange: filterState.rankRange,
-        scoreRange: filterState.scoreRange,
-        weekdays: filterState.weekdays);
-    bangumiList.addAll(result);
+    var addedVisibleItems = false;
+    var fetchedAnyPage = false;
+    var pagesFetched = 0;
+    do {
+      final page = await BangumiApi.bangumiSearch(filterState.keyword,
+          tags: filterState.tags,
+          limit: _searchPageSize,
+          offset: _searchOffset,
+          sort: filterState.sort,
+          dateRange: filterState.effectiveDateRange,
+          rankRange: filterState.rankRange,
+          scoreRange: filterState.scoreRange,
+          weekdays: filterState.weekdays);
+      if (page == null) {
+        break;
+      }
+      fetchedAnyPage = true;
+      pagesFetched++;
+      _searchOffset += page.rawCount;
+      hasMoreSearchResults = page.rawCount == _searchPageSize;
+      final existingIds = bangumiList.map((item) => item.id).toSet();
+      final newItems =
+          page.items.where((item) => existingIds.add(item.id)).toList();
+      if (newItems.isNotEmpty) {
+        bangumiList.addAll(newItems);
+        addedVisibleItems = true;
+      }
+    } while (!addedVisibleItems &&
+        hasMoreSearchResults &&
+        pagesFetched < _maxPagesPerSearch);
     isLoading = false;
-    isTimeOut = bangumiList.isEmpty;
+    isTimeOut =
+        bangumiList.isEmpty && (!fetchedAnyPage || !hasMoreSearchResults);
   }
 
   @action

@@ -1,9 +1,9 @@
 class ApiEndpoints {
   /// 当前版本
-  static const String version = '2.1.8';
+  static const String version = '2.2.6';
 
   /// 规则API级别
-  static const int apiLevel = 7;
+  static const int apiLevel = 8;
 
   /// 项目主页
   static const String projectUrl = "https://kazumi.app/";
@@ -16,14 +16,15 @@ class ApiEndpoints {
 
   /// 规则仓库
   static const String pluginShop =
-      'https://cdn.gh-proxy.org/https://raw.githubusercontent.com/Predidit/KazumiRules/refs/heads/main/';
+      'https://raw.githubusercontent.com/Predidit/KazumiRules/main/';
+
+  /// 规则仓库镜像
+  static const String pluginShopMirror =
+      'https://raw.gitcode.com/gh_mirrors/ka/KazumiRules/raw/main/';
 
   /// 在线升级
   static const String latestApp =
       'https://api.github.com/repos/Predidit/Kazumi/releases/latest';
-
-  /// Github镜像
-  static const String gitMirror = 'https://ghfast.top/';
 
   /// Bangumi 镜像测试后端
   static const String bangumiMirrorDomain = 'https://api.kazumi.fyi';
@@ -49,6 +50,9 @@ class ApiEndpoints {
 
   /// 番剧信息
   static const String bangumiInfoByID = '/v0/subjects/{0}';
+
+  /// 条目关联信息
+  static const String bangumiRelationsByID = '/v0/subjects/{0}/subjects';
 
   /// 条目搜索
   static const String bangumiRankSearch =

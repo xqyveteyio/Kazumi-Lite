@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_mobx/flutter_mobx.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:kazumi/bean/widget/play_pause_icon.dart';
 import 'package:kazumi/pages/player/controller/player_aspect_ratio.dart';
 import 'package:kazumi/pages/player/controller/player_super_resolution.dart';
 import 'package:kazumi/bean/widget/embedded_native_control_area.dart';
@@ -16,7 +18,6 @@ import 'package:kazumi/services/player/remote.dart';
 import 'package:kazumi/bean/appbar/drag_to_move_bar.dart' as dtb;
 import 'package:kazumi/pages/settings/danmaku/danmaku_settings_sheet.dart';
 import 'package:kazumi/utils/constants.dart';
-import 'package:kazumi/services/storage/storage.dart';
 import 'package:audio_video_progress_bar/audio_video_progress_bar.dart';
 import 'package:kazumi/services/player/timed_shutdown_service.dart';
 import 'package:kazumi/pages/download/download_controller.dart';
@@ -27,6 +28,7 @@ class PlayerItemPanel extends StatefulWidget {
   const PlayerItemPanel({
     super.key,
     required this.playerController,
+    required this.videoPageController,
     required this.onBackPressed,
     required this.setPlaybackSpeed,
     required this.showDanmakuSwitch,
@@ -42,17 +44,18 @@ class PlayerItemPanel extends StatefulWidget {
     required this.keyboardFocus,
     required this.sendDanmaku,
     required this.acquirePlayerPanelHold,
+    required this.onMenuVisibilityChanged,
     required this.handleDanmaku,
     required this.skipOP,
     required this.showVideoInfo,
-    required this.showSyncPlayRoomCreateDialog,
-    required this.showSyncPlayEndPointSwitchDialog,
+    required this.showSyncPlayPanel,
     required this.showDanmakuDestinationPickerAndSend,
     required this.pauseForTimedShutdown,
     this.disableAnimations = false,
   });
 
   final PlayerController playerController;
+  final VideoPageController videoPageController;
   final void Function(BuildContext) onBackPressed;
   final Future<void> Function(double) setPlaybackSpeed;
   final void Function() showDanmakuSwitch;
@@ -67,14 +70,14 @@ class PlayerItemPanel extends StatefulWidget {
   final AnimationController panelVisibilityController;
   final FocusNode keyboardFocus;
   final PlayerPanelHold Function() acquirePlayerPanelHold;
+  final ValueChanged<bool> onMenuVisibilityChanged;
   final void Function() handleDanmaku;
   final void Function(String direction) handlePreNextEpisode;
   final void Function() skipOP;
-  final void Function(String) sendDanmaku;
+  final bool Function(String) sendDanmaku;
   final void Function() showVideoInfo;
-  final void Function() showSyncPlayRoomCreateDialog;
-  final void Function() showSyncPlayEndPointSwitchDialog;
-  final void Function(String) showDanmakuDestinationPickerAndSend;
+  final void Function() showSyncPlayPanel;
+  final Future<bool> Function(String) showDanmakuDestinationPickerAndSend;
   final VoidCallback pauseForTimedShutdown;
   final bool disableAnimations;
 
@@ -83,19 +86,17 @@ class PlayerItemPanel extends StatefulWidget {
 }
 
 class _PlayerItemPanelState extends State<PlayerItemPanel> {
-  late bool haEnable;
   late Animation<Offset> topOffsetAnimation;
   late Animation<Offset> bottomOffsetAnimation;
   late Animation<Offset> leftOffsetAnimation;
-  final VideoPageController videoPageController =
-      Modular.get<VideoPageController>();
+  late final VideoPageController videoPageController =
+      widget.videoPageController;
   late final PlayerController playerController;
-  final DownloadController downloadController =
-      Modular.get<DownloadController>();
+  final DownloadController downloadController = inject<DownloadController>();
   final TextEditingController textController = TextEditingController();
   final FocusNode textFieldFocus = FocusNode();
   PlayerPanelHold? _danmakuTextFieldHold;
-  // SVG Caches
+
   String? cachedSvgString;
   Widget? cachedDanmakuOnIcon;
   Widget? cachedDanmakuOffIcon;
@@ -122,6 +123,19 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
   void _releaseDanmakuTextFieldPanel() {
     _danmakuTextFieldHold?.release();
     _danmakuTextFieldHold = null;
+  }
+
+  Future<void> _submitDanmakuText(String message) async {
+    textFieldFocus.unfocus();
+    _releaseDanmakuTextFieldPanel();
+
+    final sent = await widget.showDanmakuDestinationPickerAndSend(message);
+    if (!mounted) {
+      return;
+    }
+    if (sent) {
+      textController.clear();
+    }
   }
 
   Widget get danmakuTextField {
@@ -160,10 +174,7 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
               children: [
                 TextButton(
                   onPressed: () {
-                    textFieldFocus.unfocus();
-                    widget.showDanmakuDestinationPickerAndSend(
-                        textController.text);
-                    textController.clear();
+                    unawaited(_submitDanmakuText(textController.text));
                   },
                   style: TextButton.styleFrom(
                     foregroundColor: playerController.danmaku.danmakuOn
@@ -186,10 +197,7 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
             _holdDanmakuTextFieldPanel();
           },
           onSubmitted: (msg) {
-            textFieldFocus.unfocus();
-            widget.showDanmakuDestinationPickerAndSend(msg);
-            _releaseDanmakuTextFieldPanel();
-            textController.clear();
+            unawaited(_submitDanmakuText(msg));
           },
           onTapOutside: (_) {
             _releaseDanmakuTextFieldPanel();
@@ -201,7 +209,6 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
     });
   }
 
-  // 选择倍速
   void showSetSpeedSheet() {
     final double currentSpeed = playerController.playback.playerSpeed;
     KazumiDialog.show(builder: (context) {
@@ -263,11 +270,10 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
             builder: (BuildContext context, StateSetter setState) {
           return TextField(
             inputFormatters: [
-              FilteringTextInputFormatter.digitsOnly, // 只允许输入数字
+              FilteringTextInputFormatter.digitsOnly,
             ],
             decoration: InputDecoration(
-              floatingLabelBehavior:
-                  FloatingLabelBehavior.never, // 控制label的显示方式
+              floatingLabelBehavior: FloatingLabelBehavior.never,
               labelText: playerController.playback.buttonSkipTime.toString(),
             ),
             onChanged: (value) {
@@ -324,7 +330,6 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
       parent: widget.panelVisibilityController,
       curve: Curves.easeInOut,
     ));
-    haEnable = GStorage.getSetting(SettingsKeys.hAenable);
     cacheSvgIcons();
   }
 
@@ -695,59 +700,63 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Position reads stay inside these narrow Observers so the 1s
+            // progress tick rebuilds only the bar and time text, not the
+            // whole bottom bar.
             if (!isDesktop() && !isTablet())
               Container(
                 padding: const EdgeInsets.only(left: 10.0, bottom: 10),
-                child: Text(
-                  "${durationToString(playerController.playback.currentPosition)} / ${durationToString(playerController.playback.duration)}",
-                  style: const TextStyle(
+                child: Observer(builder: (context) {
+                  return Text(
+                    "${durationToString(playerController.playback.currentPosition)} / ${durationToString(playerController.playback.duration)}",
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12.0,
+                      fontFeatures: [
+                        FontFeature.tabularFigures(),
+                      ],
+                    ),
+                  );
+                }),
+              ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              child: Observer(builder: (context) {
+                return ProgressBar(
+                  thumbRadius: 8,
+                  thumbGlowRadius: 18,
+                  timeLabelLocation: isTablet()
+                      ? TimeLabelLocation.sides
+                      : TimeLabelLocation.none,
+                  timeLabelTextStyle: const TextStyle(
                     color: Colors.white,
                     fontSize: 12.0,
                     fontFeatures: [
                       FontFeature.tabularFigures(),
                     ],
                   ),
-                ),
-              ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-              child: ProgressBar(
-                thumbRadius: 8,
-                thumbGlowRadius: 18,
-                timeLabelLocation: isTablet()
-                    ? TimeLabelLocation.sides
-                    : TimeLabelLocation.none,
-                timeLabelTextStyle: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 12.0,
-                  fontFeatures: [
-                    FontFeature.tabularFigures(),
-                  ],
-                ),
-                progress: playerController.playback.currentPosition,
-                buffered: playerController.playback.buffer,
-                total: playerController.playback.duration,
-                onSeek: widget.handleProgressBarSeek,
-                onDragStart: (_) => widget.handleProgressBarDragStart(),
-                onDragUpdate: (details) => playerController.seeking
-                    .updateInteractiveSeek(details.timeStamp),
-              ),
+                  progress: playerController.playback.currentPosition,
+                  buffered: playerController.playback.buffer,
+                  total: playerController.playback.duration,
+                  onSeek: widget.handleProgressBarSeek,
+                  onDragStart: (_) => widget.handleProgressBarDragStart(),
+                  onDragUpdate: (details) => playerController.seeking
+                      .updateInteractiveSeek(details.timeStamp),
+                );
+              }),
             ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10),
               child: Row(
                 children: [
                   IconButton(
-                    color: Colors.white,
-                    icon: Icon(playerController.playback.playing
-                        ? Icons.pause_rounded
-                        : Icons.play_arrow_rounded),
                     tooltip: playerController.playback.playing ? '暂停' : '播放',
-                    onPressed: () {
-                      playerController.playOrPause();
-                    },
+                    onPressed: () => playerController.playOrPause(),
+                    icon: PlayPauseIcon(
+                      iconColor: Colors.white,
+                      playing: playerController.playback.playing,
+                    ),
                   ),
-                  // 更换选集
                   if (videoPageController.isFullscreen ||
                       isTablet() ||
                       isDesktop())
@@ -760,16 +769,18 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
                   if (isDesktop())
                     Container(
                       padding: const EdgeInsets.only(left: 10.0),
-                      child: Text(
-                        "${durationToString(playerController.playback.currentPosition)} / ${durationToString(playerController.playback.duration)}",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16.0,
-                          fontFeatures: [
-                            FontFeature.tabularFigures(),
-                          ],
-                        ),
-                      ),
+                      child: Observer(builder: (context) {
+                        return Text(
+                          "${durationToString(playerController.playback.currentPosition)} / ${durationToString(playerController.playback.duration)}",
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16.0,
+                            fontFeatures: [
+                              FontFeature.tabularFigures(),
+                            ],
+                          ),
+                        );
+                      }),
                     ),
                   if (isDesktop())
                     Expanded(
@@ -783,7 +794,6 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
                                 _buildDanmakuToggleButton(context),
                                 IconButton(
                                   onPressed: () {
-                                    widget.keyboardFocus.requestFocus();
                                     showDanmakuSettingsSheet(
                                       context: context,
                                       danmakuController: playerController
@@ -839,9 +849,9 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
                     ],
                     if (!playerController.danmaku.danmakuOn) const Spacer(),
                   ],
-                  // 超分辨率
                   PlayerPanelHoldMenuAnchor(
                     acquirePlayerPanelHold: widget.acquirePlayerPanelHold,
+                    onVisibilityChanged: widget.onMenuVisibilityChanged,
                     consumeOutsideTap: true,
                     builder: (BuildContext context, MenuController controller,
                         Widget? child) {
@@ -884,9 +894,9 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
                         ),
                     ],
                   ),
-                  // 倍速播放
                   PlayerPanelHoldMenuAnchor(
                     acquirePlayerPanelHold: widget.acquirePlayerPanelHold,
+                    onVisibilityChanged: widget.onMenuVisibilityChanged,
                     consumeOutsideTap: true,
                     builder: (BuildContext context, MenuController controller,
                         Widget? child) {
@@ -935,6 +945,7 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
                   ),
                   PlayerPanelHoldMenuAnchor(
                     acquirePlayerPanelHold: widget.acquirePlayerPanelHold,
+                    onVisibilityChanged: widget.onMenuVisibilityChanged,
                     consumeOutsideTap: true,
                     builder: (BuildContext context, MenuController controller,
                         Widget? child) {
@@ -1039,7 +1050,6 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
                   widget.onBackPressed(context);
                 },
               ),
-              // 拖动条
               Expanded(
                 child: dtb.DragToMoveArea(
                   child: Text(
@@ -1053,7 +1063,6 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
                   ),
                 ),
               ),
-              // 跳过
               forwardIcon(),
               if ((isDesktop() && !videoPageController.isFullscreen) ||
                   Platform.isAndroid)
@@ -1097,13 +1106,13 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
                     color: Colors.white,
                   ),
                 ),
-              // 追番
               PlayerPanelHoldCollectButton(
                 acquirePlayerPanelHold: widget.acquirePlayerPanelHold,
                 bangumiItem: videoPageController.bangumiItem,
               ),
               PlayerPanelHoldMenuAnchor(
                 acquirePlayerPanelHold: widget.acquirePlayerPanelHold,
+                onVisibilityChanged: widget.onMenuVisibilityChanged,
                 consumeOutsideTap: true,
                 builder: (BuildContext context, MenuController controller,
                     Widget? child) {
@@ -1184,7 +1193,6 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
                       ),
                     ),
                   ),
-                  // 定时关闭
                   SubmenuButton(
                     menuChildren: [
                       MenuItemButton(
@@ -1268,70 +1276,10 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
                       ),
                     ),
                   ),
-                  SubmenuButton(
-                    menuChildren: [
-                      MenuItemButton(
-                        child: Container(
-                          height: 48,
-                          constraints: BoxConstraints(minWidth: 112),
-                          child: Align(
-                            alignment: Alignment.centerLeft,
-                            child: Text(
-                                "当前房间: ${playerController.syncplay.syncplayRoom == '' ? '未加入' : playerController.syncplay.syncplayRoom}"),
-                          ),
-                        ),
-                      ),
-                      MenuItemButton(
-                        child: Container(
-                          height: 48,
-                          constraints: BoxConstraints(minWidth: 112),
-                          child: Align(
-                            alignment: Alignment.centerLeft,
-                            child: Text(
-                                "网络延时: ${playerController.syncplay.syncplayClientRtt}ms"),
-                          ),
-                        ),
-                      ),
-                      MenuItemButton(
-                        onPressed: () {
-                          widget.showSyncPlayRoomCreateDialog();
-                        },
-                        child: Container(
-                          height: 48,
-                          constraints: BoxConstraints(minWidth: 112),
-                          child: Align(
-                            alignment: Alignment.centerLeft,
-                            child: Text("加入房间"),
-                          ),
-                        ),
-                      ),
-                      MenuItemButton(
-                        onPressed: () {
-                          widget.showSyncPlayEndPointSwitchDialog();
-                        },
-                        child: Container(
-                          height: 48,
-                          constraints: BoxConstraints(minWidth: 112),
-                          child: Align(
-                            alignment: Alignment.centerLeft,
-                            child: Text("切换服务器"),
-                          ),
-                        ),
-                      ),
-                      MenuItemButton(
-                        onPressed: () async {
-                          await playerController.exitSyncPlayRoom();
-                        },
-                        child: Container(
-                          height: 48,
-                          constraints: BoxConstraints(minWidth: 112),
-                          child: Align(
-                            alignment: Alignment.centerLeft,
-                            child: Text("断开连接"),
-                          ),
-                        ),
-                      ),
-                    ],
+                  MenuItemButton(
+                    onPressed: () {
+                      widget.showSyncPlayPanel();
+                    },
                     child: Container(
                       height: 48,
                       constraints: BoxConstraints(minWidth: 112),

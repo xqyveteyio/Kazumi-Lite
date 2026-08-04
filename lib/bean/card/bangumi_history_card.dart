@@ -4,54 +4,20 @@ import 'package:flutter_modular/flutter_modular.dart';
 import 'package:kazumi/bean/card/network_img_layer.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/bean/widget/collect_button.dart';
-import 'package:kazumi/modules/download/download_module.dart';
 import 'package:kazumi/modules/history/history_module.dart';
 import 'package:kazumi/pages/collect/collect_controller.dart';
-import 'package:kazumi/pages/download/download_controller.dart';
-import 'package:kazumi/pages/video/video_controller.dart';
-import 'package:kazumi/plugins/plugins.dart';
-import 'package:kazumi/plugins/plugins_controller.dart';
-import 'package:kazumi/services/logging/logger.dart';
+import 'package:kazumi/services/player/history_playback_service.dart';
+import 'package:kazumi/services/plugin/rule_engine_models.dart'
+    show RuleCancelToken;
 import 'package:kazumi/utils/device.dart';
 import 'package:kazumi/utils/date_time.dart';
 
-String historySourceText(String entryKind) {
+String _historySourceText(String entryKind) {
   return HistoryEntryKind.normalize(entryKind) == HistoryEntryKind.offline
       ? '缓存'
       : '在线';
 }
 
-Future<HistoryPlaybackOpenResult> openHistoryPlaybackForEntry({
-  required String entryKind,
-  required Future<bool> Function() openOnlinePlayback,
-  required Future<bool> Function() openOfflinePlayback,
-}) async {
-  if (HistoryEntryKind.normalize(entryKind) == HistoryEntryKind.offline) {
-    final opened = await openOfflinePlayback();
-    return HistoryPlaybackOpenResult(
-      opened: opened,
-      failureMessage: opened ? null : '未找到可用缓存',
-    );
-  }
-
-  final opened = await openOnlinePlayback();
-  return HistoryPlaybackOpenResult(
-    opened: opened,
-    failureMessage: opened ? null : '在线源不可用，请重新选择播放源',
-  );
-}
-
-class HistoryPlaybackOpenResult {
-  const HistoryPlaybackOpenResult({
-    required this.opened,
-    required this.failureMessage,
-  });
-
-  final bool opened;
-  final String? failureMessage;
-}
-
-// 视频历史记录卡片 - 水平布局
 class BangumiHistoryCardV extends StatefulWidget {
   const BangumiHistoryCardV({
     super.key,
@@ -69,125 +35,43 @@ class BangumiHistoryCardV extends StatefulWidget {
 }
 
 class _BangumiHistoryCardVState extends State<BangumiHistoryCardV> {
-  final VideoPageController videoPageController =
-      Modular.get<VideoPageController>();
-  final PluginsController pluginsController = Modular.get<PluginsController>();
-  final CollectController collectController = Modular.get<CollectController>();
-  final DownloadController downloadController =
-      Modular.get<DownloadController>();
+  final CollectController collectController = inject<CollectController>();
+  final HistoryPlaybackService _playbackService =
+      inject<HistoryPlaybackService>();
+
+  RuleCancelToken? _queryRoadsCancelToken;
+
+  @override
+  void dispose() {
+    _queryRoadsCancelToken?.cancel();
+    super.dispose();
+  }
 
   Future<void> _onTap() async {
     if (widget.showDelete) {
       KazumiDialog.showToast(message: '编辑模式');
       return;
     }
+    _queryRoadsCancelToken?.cancel();
+    final cancelToken = RuleCancelToken();
+    _queryRoadsCancelToken = cancelToken;
     KazumiDialog.showLoading(
       msg: '获取中',
       barrierDismissible: isDesktop(),
-      onDismiss: () {
-        videoPageController.cancelQueryRoads();
-      },
+      onDismiss: cancelToken.cancel,
     );
-    final result = await openHistoryPlaybackForEntry(
-      entryKind: widget.historyItem.entryKind,
-      openOnlinePlayback: _openOnlinePlayback,
-      openOfflinePlayback: _openOfflinePlayback,
+    final result = await _playbackService.open(
+      widget.historyItem,
+      cancelToken: cancelToken,
     );
     KazumiDialog.dismiss();
-    if (result.opened) {
-      Modular.to.pushNamed('/video/');
-      return;
+    if (!mounted) return;
+    switch (result) {
+      case HistoryPlaybackReady(:final args):
+        context.pushNamed('/video/', arguments: args);
+      case HistoryPlaybackUnavailable(:final reason):
+        KazumiDialog.showToast(message: reason);
     }
-    KazumiDialog.showToast(message: result.failureMessage ?? '未找到可用播放入口');
-  }
-
-  Future<bool> _openOnlinePlayback() async {
-    if (widget.historyItem.lastSrc.isEmpty) {
-      return false;
-    }
-    Plugin? targetPlugin;
-    for (Plugin plugin in pluginsController.pluginList) {
-      if (plugin.name == widget.historyItem.adapterName) {
-        targetPlugin = plugin;
-        break;
-      }
-    }
-    if (targetPlugin == null) {
-      return false;
-    }
-    videoPageController.bangumiItem = widget.historyItem.bangumiItem;
-    videoPageController.currentPlugin = targetPlugin;
-    videoPageController.title = widget.historyItem.bangumiItem.nameCn == ''
-        ? widget.historyItem.bangumiItem.name
-        : widget.historyItem.bangumiItem.nameCn;
-    videoPageController.src = widget.historyItem.lastSrc;
-    try {
-      await videoPageController.queryRoads(
-        widget.historyItem.lastSrc,
-        targetPlugin.name,
-      );
-      return true;
-    } catch (_) {
-      KazumiLogger().w("QueryManager: failed to query roads");
-      return false;
-    }
-  }
-
-  Future<bool> _openOfflinePlayback() async {
-    final downloadedEpisodes = downloadController.getCompletedEpisodes(
-      widget.historyItem.bangumiItem.id,
-      widget.historyItem.adapterName,
-    );
-    if (downloadedEpisodes.isEmpty) {
-      return false;
-    }
-
-    DownloadEpisode? targetEpisode;
-    if (widget.historyItem.episodePageUrl.isNotEmpty) {
-      for (final episode in downloadedEpisodes) {
-        if (episode.episodePageUrl == widget.historyItem.episodePageUrl) {
-          targetEpisode = episode;
-          break;
-        }
-      }
-    }
-    targetEpisode ??= _episodeByNumber(
-      downloadedEpisodes,
-      widget.historyItem.lastWatchEpisode,
-    );
-    if (targetEpisode == null) {
-      return false;
-    }
-
-    final localPath = downloadController.getLocalVideoPath(
-      widget.historyItem.bangumiItem.id,
-      widget.historyItem.adapterName,
-      targetEpisode.episodeNumber,
-    );
-    if (localPath == null) {
-      return false;
-    }
-
-    videoPageController.initForOfflinePlayback(
-      bangumiItem: widget.historyItem.bangumiItem,
-      pluginName: widget.historyItem.adapterName,
-      episodeNumber: targetEpisode.episodeNumber,
-      road: targetEpisode.road,
-      downloadedEpisodes: downloadedEpisodes,
-    );
-    return true;
-  }
-
-  DownloadEpisode? _episodeByNumber(
-    List<DownloadEpisode> episodes,
-    int episodeNumber,
-  ) {
-    for (final episode in episodes) {
-      if (episode.episodeNumber == episodeNumber) {
-        return episode;
-      }
-    }
-    return null;
   }
 
   @override
@@ -202,7 +86,7 @@ class _BangumiHistoryCardVState extends State<BangumiHistoryCardV> {
     final String episodeText = widget.historyItem.lastWatchEpisodeName.isEmpty
         ? '第${widget.historyItem.lastWatchEpisode}话'
         : widget.historyItem.lastWatchEpisodeName;
-    final String sourceText = historySourceText(widget.historyItem.entryKind);
+    final String sourceText = _historySourceText(widget.historyItem.entryKind);
 
     return Dismissible(
       key: ValueKey(widget.historyItem.key),
@@ -351,7 +235,7 @@ class _BangumiHistoryCardVState extends State<BangumiHistoryCardV> {
                         ),
                         tooltip: '番剧详情',
                         onPressed: () {
-                          Modular.to.pushNamed(
+                          context.pushNamed(
                             '/info/',
                             arguments: widget.historyItem.bangumiItem,
                           );

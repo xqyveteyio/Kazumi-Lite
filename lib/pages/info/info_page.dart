@@ -12,7 +12,6 @@ import 'package:kazumi/pages/info/info_controller.dart';
 import 'package:kazumi/bean/card/bangumi_info_card.dart';
 import 'package:kazumi/pages/info/source_sheet.dart';
 import 'package:kazumi/plugins/plugins_controller.dart';
-import 'package:kazumi/pages/video/video_controller.dart';
 import 'package:kazumi/bean/card/network_img_layer.dart';
 import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/pages/info/info_tabview.dart';
@@ -24,7 +23,16 @@ import 'package:kazumi/bean/appbar/drag_to_move_bar.dart' as dtb;
 import 'package:kazumi/utils/device.dart';
 
 class InfoPage extends StatefulWidget {
-  const InfoPage({super.key});
+  const InfoPage({
+    super.key,
+    required this.inputBangumiItem,
+    required this.infoController,
+    required this.pluginsController,
+  });
+
+  final BangumiItem inputBangumiItem;
+  final InfoController infoController;
+  final PluginsController pluginsController;
 
   @override
   State<InfoPage> createState() => _InfoPageState();
@@ -35,19 +43,15 @@ class _InfoPageState extends State<InfoPage> with TickerProviderStateMixin {
     '概览',
     '吐槽',
     '角色',
-    '评论',
+    '关联',
     '制作人员',
   ];
   static const int _commentsTabIndex = 1;
   static const Duration _minimumBangumiInfoLoadingDuration =
       Duration(milliseconds: 600);
 
-  /// Don't use modular singleton here. We may have multiple info pages.
-  /// Use a new instance of InfoController for each info page.
-  final InfoController infoController = InfoController();
-  final VideoPageController videoPageController =
-      Modular.get<VideoPageController>();
-  final PluginsController pluginsController = Modular.get<PluginsController>();
+  InfoController get infoController => widget.infoController;
+  PluginsController get pluginsController => widget.pluginsController;
   late TabController sourceTabController;
   late TabController infoTabController;
   late bool showRating;
@@ -64,7 +68,7 @@ class _InfoPageState extends State<InfoPage> with TickerProviderStateMixin {
   bool _showBangumiInfoSkeleton = false;
   int _fabTabIndex = 0;
 
-  final inputBangumiIten = Modular.args.data as BangumiItem;
+  BangumiItem get inputBangumiIten => widget.inputBangumiItem;
 
   bool get _isShowingBangumiInfoSkeleton =>
       infoController.isLoading || _showBangumiInfoSkeleton;
@@ -131,6 +135,15 @@ class _InfoPageState extends State<InfoPage> with TickerProviderStateMixin {
           staffQueryTimeout = true;
         });
       }
+    }
+  }
+
+  Future<void> loadRelations() async {
+    try {
+      await infoController
+          .queryBangumiRelationsByID(infoController.bangumiItem.id);
+    } catch (e) {
+      KazumiLogger().e('InfoPage: failed to load relations', error: e);
     }
   }
 
@@ -201,8 +214,8 @@ class _InfoPageState extends State<InfoPage> with TickerProviderStateMixin {
     infoController.characterList.clear();
     infoController.clearComments();
     infoController.staffList.clear();
+    infoController.clearRelations();
     infoController.pluginSearchResponseList.clear();
-    videoPageController.resetEpisodeState();
     // Search results can miss rating distribution or summaries, so fill those
     // fields without replacing image URLs that are already rendered.
     if (_needsBangumiInfoRefresh(infoController.bangumiItem)) {
@@ -231,6 +244,9 @@ class _InfoPageState extends State<InfoPage> with TickerProviderStateMixin {
         !charactersIsEmpty &&
         !charactersQueryTimeout) {
       loadCharacters();
+    }
+    if (index == 3 && infoController.canLoadRelations) {
+      loadRelations();
     }
     if (index == 4 &&
         infoController.staffList.isEmpty &&
@@ -286,8 +302,8 @@ class _InfoPageState extends State<InfoPage> with TickerProviderStateMixin {
     infoController.characterList.clear();
     infoController.clearComments();
     infoController.staffList.clear();
+    infoController.clearRelations();
     infoController.pluginSearchResponseList.clear();
-    videoPageController.resetEpisodeState();
     sourceTabController.dispose();
     infoTabController.dispose();
     super.dispose();
@@ -361,7 +377,7 @@ class _InfoPageState extends State<InfoPage> with TickerProviderStateMixin {
                     leading: EmbeddedNativeControlArea(
                       child: IconButton(
                         onPressed: () {
-                          Navigator.maybePop(context);
+                          context.maybePop();
                         },
                         icon: Icon(Icons.arrow_back),
                       ),
@@ -478,6 +494,11 @@ class _InfoPageState extends State<InfoPage> with TickerProviderStateMixin {
                 onCommentsTabSelected: onCommentsTabSelected,
                 characterList: infoController.characterList,
                 staffList: infoController.staffList,
+                relationList: infoController.relationList,
+                relationsIsLoading: infoController.relationsIsLoading,
+                relationsQueryTimeout: infoController.relationsQueryTimeout,
+                relationsHasLoaded: infoController.relationsHasLoaded,
+                loadRelations: loadRelations,
                 isLoading: showBangumiInfoSkeleton,
               );
             }),
@@ -495,7 +516,6 @@ class _InfoPageState extends State<InfoPage> with TickerProviderStateMixin {
                     showAdaptiveBottomSheet<void>(
                       backgroundColor:
                           Theme.of(context).scaffoldBackgroundColor,
-                      showDragHandle: true,
                       context: context,
                       builder: (context) {
                         return SourceSheet(

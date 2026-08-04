@@ -3,6 +3,7 @@ import 'package:kazumi/request/config/api_endpoints.dart';
 import 'package:kazumi/request/clients/bangumi_client.dart';
 import 'package:kazumi/request/core/network_exception.dart';
 import 'package:kazumi/modules/bangumi/bangumi_item.dart';
+import 'package:kazumi/modules/bangumi/bangumi_relation.dart';
 import 'package:kazumi/modules/comments/comment_response.dart';
 import 'package:kazumi/modules/characters/characters_response.dart';
 import 'package:kazumi/modules/bangumi/episode_item.dart';
@@ -14,6 +15,16 @@ import 'package:kazumi/modules/collect/collect_type_mapper.dart';
 import 'package:kazumi/modules/bangumi/bangumi_collection_type.dart';
 import 'package:kazumi/modules/comments/comment_item.dart';
 import 'package:kazumi/utils/search_parser.dart';
+
+class BangumiSearchPage {
+  const BangumiSearchPage({
+    required this.items,
+    required this.rawCount,
+  });
+
+  final List<BangumiItem> items;
+  final int rawCount;
+}
 
 class BangumiApi {
   static final BangumiClient _client = BangumiClient.instance;
@@ -292,8 +303,9 @@ class BangumiApi {
     };
   }
 
-  static Future<List<BangumiItem>> bangumiSearch(String keyword,
+  static Future<BangumiSearchPage?> bangumiSearch(String keyword,
       {List<String> tags = const [],
+      int limit = 20,
       int offset = 0,
       String sort = 'heat',
       SearchDateRange? dateRange,
@@ -316,7 +328,7 @@ class BangumiApi {
       final jsonData = await _client.post(
         ApiEndpoints.formatUrl(
             ApiEndpoints.bangumiAPIDomain + ApiEndpoints.bangumiRankSearch,
-            [20, offset]),
+            [limit, offset]),
         data: params,
       );
       final jsonList = jsonData['data'];
@@ -333,10 +345,14 @@ class BangumiApi {
           }
         }
       }
+      return BangumiSearchPage(
+        items: bangumiList,
+        rawCount: jsonList.length,
+      );
     } catch (e) {
       KazumiLogger().e('Network: unknown search problem', error: e);
+      return null;
     }
-    return bangumiList;
   }
 
   static Future<BangumiItem?> getBangumiInfoByID(int id) async {
@@ -352,6 +368,37 @@ class BangumiApi {
       KazumiLogger().e('Network: resolve bangumi item failed', error: e);
       return null;
     }
+  }
+
+  static Future<List<BangumiRelation>> getBangumiRelationsByID(int id) async {
+    final jsonData = await _client.get(
+      ApiEndpoints.formatUrl(
+        ApiEndpoints.bangumiAPIDomain + ApiEndpoints.bangumiRelationsByID,
+        [id],
+      ),
+    );
+    if (jsonData is! List) {
+      throw const FormatException('Bangumi relations response must be a list');
+    }
+
+    final relations = <BangumiRelation>[];
+    for (final jsonItem in jsonData) {
+      try {
+        if (jsonItem is! Map) {
+          throw const FormatException('Bangumi relation must be an object');
+        }
+        relations.add(
+          BangumiRelation.fromJson(Map<String, dynamic>.from(jsonItem)),
+        );
+      } catch (e, stackTrace) {
+        KazumiLogger().w(
+          'BangumiApi: skipped malformed relation item',
+          error: e,
+          stackTrace: stackTrace,
+        );
+      }
+    }
+    return relations;
   }
 
   static Future<EpisodeInfo> getBangumiEpisodeByID(int id, int episode) async {

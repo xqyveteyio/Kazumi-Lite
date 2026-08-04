@@ -3,7 +3,9 @@ import 'dart:io';
 
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:kazumi/services/logging/logger.dart';
+import 'package:kazumi/services/network/bangumi_image_url_rewriter.dart';
 import 'package:kazumi/services/network/proxy_utils.dart';
+import 'package:kazumi/services/network/system_proxy_service.dart';
 import 'package:kazumi/services/storage/storage.dart';
 
 class ProxyAwareImageCacheManager extends CacheManager with ImageCacheManager {
@@ -14,27 +16,12 @@ class ProxyAwareImageCacheManager extends CacheManager with ImageCacheManager {
       : super(
           Config(
             DefaultCacheManager.key,
-            fileService: ProxyAwareImageFileService(),
+            fileService: _ProxyAwareImageFileService(),
           ),
         );
 }
 
-class ProxyAwareImageFileService extends FileService {
-  static String rewriteBangumiMirrorImageUrl(
-    String url, {
-    required bool enableBangumiProxy,
-  }) {
-    if (!enableBangumiProxy) return url;
-
-    final uri = Uri.tryParse(url);
-    if (uri == null || uri.host != 'lain.bgm.tv') return url;
-    if (uri.scheme != 'http' && uri.scheme != 'https') return url;
-
-    final sourceUrl =
-        uri.host + uri.path + (uri.hasQuery ? '?${uri.query}' : '');
-    return 'https://wsrv.nl/?url=$sourceUrl';
-  }
-
+class _ProxyAwareImageFileService extends FileService {
   @override
   Future<FileServiceResponse> get(
     String url, {
@@ -43,9 +30,9 @@ class ProxyAwareImageFileService extends FileService {
     final client = _createHttpClient();
     try {
       final request = await client.getUrl(Uri.parse(
-        rewriteBangumiMirrorImageUrl(
+        BangumiImageUrlRewriter.rewrite(
           url,
-          enableBangumiProxy: _bangumiMirrorEnabled(),
+          enabled: _bangumiMirrorEnabled(),
         ),
       ));
       headers?.forEach(request.headers.set);
@@ -64,7 +51,13 @@ class ProxyAwareImageFileService extends FileService {
   HttpClient _createHttpClient() {
     final client = HttpClient();
     final proxy = _currentProxy();
-    if (proxy == null) return client;
+    if (proxy == null) {
+      if (Platform.isWindows) {
+        // Unlike the manual proxy path, certificate checks stay strict here.
+        client.findProxy = SystemProxyService.findProxy;
+      }
+      return client;
+    }
 
     client.findProxy = (_) => 'PROXY ${proxy.$1}:${proxy.$2}';
     client.badCertificateCallback = (cert, host, port) => true;

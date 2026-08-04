@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:kazumi/pages/player/player_controller.dart';
 import 'package:kazumi/pages/video/video_controller.dart';
+import 'package:kazumi/pages/video/danmaku_send_sheet.dart';
+import 'package:kazumi/pages/video/video_playback_args.dart';
 import 'package:kazumi/pages/history/history_controller.dart';
 import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/pages/player/player_item.dart';
@@ -13,6 +15,7 @@ import 'package:kazumi/services/player/pip_utils.dart';
 import 'package:kazumi/bean/appbar/drag_to_move_bar.dart' as dtb;
 import 'package:kazumi/bean/dialog/adaptive_bottom_sheet.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
+import 'package:kazumi/bean/dialog/material_bottom_sheet.dart';
 import 'package:screen_brightness_platform_interface/screen_brightness_platform_interface.dart';
 import 'package:scrollview_observer/scrollview_observer.dart';
 import 'package:kazumi/pages/player/episode_comments_sheet.dart';
@@ -26,7 +29,20 @@ import 'package:kazumi/utils/device.dart';
 import 'package:kazumi/services/platform/display_mode_service.dart';
 
 class VideoPage extends StatefulWidget {
-  const VideoPage({super.key});
+  const VideoPage({
+    super.key,
+    required this.args,
+    required this.playerController,
+    required this.videoPageController,
+    required this.historyController,
+    required this.downloadController,
+  });
+
+  final VideoPlaybackArgs args;
+  final PlayerController playerController;
+  final VideoPageController videoPageController;
+  final HistoryController historyController;
+  final DownloadController downloadController;
 
   @override
   State<VideoPage> createState() => _VideoPageState();
@@ -34,17 +50,18 @@ class VideoPage extends StatefulWidget {
 
 class _VideoPageState extends State<VideoPage>
     with TickerProviderStateMixin, WindowListener {
-  final VideoPageController videoPageController =
-      Modular.get<VideoPageController>();
-  PlayerController? _playerController;
-  final HistoryController historyController = Modular.get<HistoryController>();
-  final DownloadController downloadController =
-      Modular.get<DownloadController>();
+  PlayerController get playerController => widget.playerController;
+  VideoPageController get videoPageController => widget.videoPageController;
+  bool _didInitializePlayback = false;
+  bool _isClosing = false;
+  HistoryController get historyController => widget.historyController;
+  DownloadController get downloadController => widget.downloadController;
   late bool playResume;
   bool showDebugLog = false;
   List<String> webviewLogLines = [];
   StreamSubscription<String>? _logSubscription;
-  final FocusNode keyboardFocus = FocusNode();
+  final FocusNode keyboardFocus =
+      FocusNode(debugLabel: 'Video player shortcut scope');
 
   ScrollController scrollController = ScrollController();
   late GridObserverController observerController;
@@ -67,6 +84,7 @@ class _VideoPageState extends State<VideoPage>
   @override
   void initState() {
     super.initState();
+    videoPageController.applyPlaybackArgs(widget.args);
     windowManager.addListener(this);
     // Window fullscreen can be changed outside this page through system chrome.
     videoPageController.isDesktopFullscreen();
@@ -94,40 +112,19 @@ class _VideoPageState extends State<VideoPage>
     playResume = GStorage.getSetting(SettingsKeys.playResume);
     disableAnimations =
         GStorage.getSetting(SettingsKeys.playerDisableAnimations);
-
-    // PlayerController is route-scoped and may not be registered until after
-    // the first frame.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _loadPlayerController();
-    });
   }
 
-  void _loadPlayerController() {
-    if (!mounted) {
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_didInitializePlayback) {
       return;
     }
+    _didInitializePlayback = true;
+    _initializePlayback();
+  }
 
-    try {
-      _playerController = Modular.get<PlayerController>();
-    } catch (e) {
-      KazumiLogger().e(
-        'VideoPage: failed to load PlayerController',
-        error: e,
-      );
-      if (mounted) {
-        videoPageController.loading = false;
-        videoPageController.errorMessage = '播放器初始化失败';
-      }
-      return;
-    }
-
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {});
-    final playerController = _playerController!;
-
+  void _initializePlayback() {
     if (videoPageController.isOfflineMode) {
       _initOfflineMode(playerController);
     } else {
@@ -179,7 +176,6 @@ class _VideoPageState extends State<VideoPage>
   }
 
   void _initOnlineMode(PlayerController playerController) {
-    videoPageController.resetEpisodeState();
     videoPageController.historyOffset = 0;
     _showTabBodyImmediately(locateEpisode: false);
 
@@ -240,21 +236,13 @@ class _VideoPageState extends State<VideoPage>
     try {
       _logSubscription?.cancel();
     } catch (_) {}
-    videoPageController.cancelVideoSourceResolution();
-    try {
-      _playerController?.dispose();
-    } catch (e) {
-      KazumiLogger().e(
-          'VideoPageController: failed to dispose playerController',
-          error: e);
-    }
+    // Cancellation and log-stream teardown happen in VideoPageController's
+    // own dispose when Modular releases the route scope.
     if (!isDesktop()) {
       try {
         ScreenBrightnessPlatform.instance.resetApplicationScreenBrightness();
       } catch (_) {}
     }
-    videoPageController.resetEpisodeComments();
-    videoPageController.resetOfflineMode();
     DisplayModeService.unlockScreenRotation();
     keyboardFocus.dispose();
     tabController.dispose();
@@ -299,10 +287,6 @@ class _VideoPageState extends State<VideoPage>
 
   Future<void> changeEpisode(int episode,
       {int currentRoad = 0, int offset = 0}) async {
-    final playerController = _playerController;
-    if (playerController == null) {
-      return;
-    }
     if (!mounted) {
       return;
     }
@@ -436,37 +420,40 @@ class _VideoPageState extends State<VideoPage>
       return;
     }
     if (videoPageController.isFullscreen) {
-      DisplayModeService.exitFullScreen();
+      await DisplayModeService.exitFullScreen();
       videoPageController.isFullscreen = false;
     }
-    Navigator.of(context).pop();
+    if (_isClosing) {
+      return;
+    }
+    _isClosing = true;
+    playerController.beginShutdown();
+    if (!context.mounted) {
+      return;
+    }
+    context.pop();
   }
 
   void pauseForTimedShutdown() {
-    final playerController = _playerController;
-    if (playerController != null && playerController.playback.playing) {
+    if (playerController.playback.playing) {
       playerController.pause();
     }
   }
 
-  void sendDanmaku(String msg) async {
-    final playerController = _playerController;
-    if (playerController == null) {
-      return;
-    }
+  bool sendDanmaku(String msg) {
     keyboardFocus.requestFocus();
     if (playerController.danmaku.danDanmakus.isEmpty) {
       KazumiDialog.showToast(
         message: '当前剧集不支持弹幕发送的说',
       );
-      return;
+      return false;
     }
     if (msg.isEmpty) {
       KazumiDialog.showToast(message: '弹幕内容为空');
-      return;
+      return false;
     } else if (msg.length > 100) {
       KazumiDialog.showToast(message: '弹幕内容过长');
-      return;
+      return false;
     }
 
     final destination = playerController.danmaku.danmakuDestination;
@@ -474,7 +461,7 @@ class _VideoPageState extends State<VideoPage>
     if (destination == DanmakuDestination.chatRoom) {
       if (playerController.syncplay.syncplayRoom.isEmpty) {
         KazumiDialog.showToast(message: '你还没有加入一起看，无法发送聊天室弹幕');
-        return;
+        return false;
       }
 
       final sender =
@@ -491,120 +478,72 @@ class _VideoPageState extends State<VideoPage>
         ),
       );
 
-      playerController.sendSyncPlayChatMessage(msg);
+      unawaited(playerController.sendSyncPlayChatMessage(msg));
     } else {
       // The remote danmaku provider does not expose a send API here; render the
       // local echo so the user still sees their message immediately.
       playerController.danmaku.canvasController
           .addDanmaku(DanmakuContentItem(msg, selfSend: true));
     }
+
+    return true;
   }
 
   Future<void> showMobileDanmakuInput() async {
-    String danmakuText = '';
-    final message = await showAdaptiveBottomSheet<String>(
-      context: context,
-      builder: (context) {
-        return Padding(
-          padding: EdgeInsets.fromLTRB(
-            16,
-            12,
-            16,
-            16 + MediaQuery.viewInsetsOf(context).bottom,
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              Expanded(
-                child: TextField(
-                  autofocus: true,
-                  textInputAction: TextInputAction.send,
-                  onChanged: (value) => danmakuText = value,
-                  onSubmitted: (message) {
-                    Navigator.of(context).pop(message);
-                  },
-                  decoration: const InputDecoration(
-                    filled: true,
-                    hintText: '发个友善的弹幕见证当下',
-                    prefixIcon: Icon(Icons.chat_bubble_outline_rounded),
-                    border: OutlineInputBorder(
-                      borderSide: BorderSide.none,
-                      borderRadius: BorderRadius.all(Radius.circular(20)),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              IconButton.filled(
-                tooltip: '发送',
-                onPressed: () {
-                  Navigator.of(context).pop(danmakuText);
-                },
-                icon: const Icon(Icons.send_rounded),
-              ),
-            ],
-          ),
-        );
-      },
-    );
+    final message = await showMobileDanmakuInputSheet(context);
 
     if (!mounted || message == null) {
       return;
     }
-    showDanmakuDestinationPickerAndSend(message);
+    await showDanmakuDestinationPickerAndSend(message);
   }
 
-  void showDanmakuDestinationPickerAndSend(String msg) async {
-    final playerController = _playerController;
-    if (playerController == null) {
-      return;
-    }
+  Future<bool> showDanmakuDestinationPickerAndSend(String msg) async {
     if (msg.trim().isEmpty) {
       KazumiDialog.showToast(message: '弹幕内容为空');
-      return;
+      return false;
     }
 
     final DanmakuDestination? result =
         await showAdaptiveBottomSheet<DanmakuDestination>(
       context: context,
       builder: (context) {
-        final theme = Theme.of(context);
         return Padding(
-          padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+          padding: const EdgeInsets.only(bottom: 16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              MaterialBottomSheetHeader(
+                title: '发送弹幕至',
+                description: '选择这条弹幕的发送位置',
+                onClose: () => Navigator.of(context).pop(),
+              ),
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                child: Text(
-                  '发送弹幕至',
-                  style: theme.textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: MaterialBottomSheetGroup(
+                  title: '发送位置',
+                  children: [
+                    ListTile(
+                      contentPadding:
+                          const EdgeInsets.symmetric(horizontal: 16),
+                      leading: const Icon(Icons.groups_rounded),
+                      title: const Text('发送到聊天室'),
+                      subtitle: const Text('同步观看成员均可看到'),
+                      onTap: () => Navigator.of(context)
+                          .pop(DanmakuDestination.chatRoom),
+                    ),
+                    ListTile(
+                      contentPadding:
+                          const EdgeInsets.symmetric(horizontal: 16),
+                      leading: const Icon(Icons.cloud_upload_rounded),
+                      title: const Text('发送到远程弹幕库'),
+                      subtitle: const Text('作为视频弹幕发送'),
+                      onTap: () => Navigator.of(context)
+                          .pop(DanmakuDestination.remoteDanmaku),
+                    ),
+                  ],
                 ),
-              ),
-              const SizedBox(height: 12),
-              ListTile(
-                leading: const Icon(Icons.groups_rounded),
-                title: const Text('发送到聊天室'),
-                subtitle: const Text('同步观看成员均可看到'),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                onTap: () =>
-                    Navigator.of(context).pop(DanmakuDestination.chatRoom),
-              ),
-              const SizedBox(height: 4),
-              ListTile(
-                leading: const Icon(Icons.cloud_upload_rounded),
-                title: const Text('发送到远程弹幕库'),
-                subtitle: const Text('作为视频弹幕发送'),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                onTap: () =>
-                    Navigator.of(context).pop(DanmakuDestination.remoteDanmaku),
               ),
             ],
           ),
@@ -612,14 +551,13 @@ class _VideoPageState extends State<VideoPage>
       },
     );
 
-    if (result != null) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {});
-      playerController.danmaku.danmakuDestination = result;
-      sendDanmaku(msg);
+    if (result == null || !mounted) {
+      return false;
     }
+
+    setState(() {});
+    playerController.danmaku.danmakuDestination = result;
+    return sendDanmaku(msg);
   }
 
   @override
@@ -674,7 +612,11 @@ class _VideoPageState extends State<VideoPage>
                                 ? MediaQuery.sizeOf(context).height
                                 : MediaQuery.sizeOf(context).width * 9 / 16,
                             width: MediaQuery.sizeOf(context).width,
-                            child: playerBody,
+                            child: Focus(
+                              focusNode: keyboardFocus,
+                              autofocus: true,
+                              child: playerBody,
+                            ),
                           ),
                         ),
                         if (!isLandscape) Expanded(child: tabBody),
@@ -749,8 +691,7 @@ class _VideoPageState extends State<VideoPage>
   }
 
   Widget get playerBody {
-    final playerController = _playerController;
-    final bool playerLoading = playerController?.playback.loading ?? true;
+    final bool playerLoading = playerController.playback.loading;
     return Stack(
       children: [
         Positioned.fill(
@@ -888,10 +829,11 @@ class _VideoPageState extends State<VideoPage>
           ),
         ),
         Positioned.fill(
-          child: playerController == null || playerController.playback.loading
+          child: playerController.playback.loading
               ? Container()
               : PlayerItem(
                   playerController: playerController,
+                  videoPageController: videoPageController,
                   toggleMenu: _toggleTabBodyAnimated,
                   showMenuImmediately: _showTabBodyImmediately,
                   hideMenuImmediately: _hideTabBodyImmediately,
@@ -1005,7 +947,6 @@ class _VideoPageState extends State<VideoPage>
   }
 
   Widget _buildDownloadStatusIcon(int episodeNumber, String episodePageUrl) {
-    // 离线模式下不显示下载状态图标
     if (videoPageController.isOfflineMode) return const SizedBox.shrink();
     final episode = _getEpisodeFromRecords(episodeNumber, episodePageUrl);
     if (episode == null) return const SizedBox.shrink();
@@ -1148,8 +1089,7 @@ class _VideoPageState extends State<VideoPage>
   }
 
   Widget get tabBody {
-    final playerController = _playerController;
-    final bool danmakuOn = playerController?.danmaku.danmakuOn ?? false;
+    final bool danmakuOn = playerController.danmaku.danmakuOn;
     final int episodeNum = videoPageController.commentsEpisode;
 
     return Container(
@@ -1253,17 +1193,20 @@ class _VideoPageState extends State<VideoPage>
                             onPressed: () {
                               showAdaptiveBottomSheet<void>(
                                 context: context,
-                                builder: (context) =>
-                                    DownloadEpisodeSheet(road: visibleRoad),
+                                builder: (context) => DownloadEpisodeSheet(
+                                  road: visibleRoad,
+                                  videoPageController: videoPageController,
+                                ),
                               );
                             },
                           ),
                         ),
                     ],
                   ),
-                  EpisodeInfoWidget(
+                  EpisodeCommentsSheet(
                     episode: episodeNum,
-                    child: EpisodeCommentsSheet(),
+                    selection: videoPageController.selectedEpisode,
+                    videoPageController: videoPageController,
                   ),
                 ],
               ),

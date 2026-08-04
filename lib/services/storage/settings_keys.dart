@@ -1,3 +1,5 @@
+import 'package:kazumi/services/player/syncplay_endpoint.dart';
+
 enum SettingGroup {
   player,
   danmaku,
@@ -14,13 +16,9 @@ enum SettingGroup {
 }
 
 class SettingContext {
-  const SettingContext({
-    this.compactLayout = false,
-    this.isAndroid = false,
-  });
+  const SettingContext({this.compactLayout = false});
 
   final bool compactLayout;
-  final bool isAndroid;
 }
 
 class SettingKey<T> {
@@ -53,7 +51,6 @@ class SettingsKeys {
     _SettingBoxKey.hardwareDecoder,
     'auto-safe',
     group: SettingGroup.player,
-    defaultResolver: _resolveHardwareDecoderDefault,
   );
   static const searchEnhanceEnable = SettingKey<bool>(
     _SettingBoxKey.searchEnhanceEnable,
@@ -62,6 +59,11 @@ class SettingsKeys {
   );
   static const autoUpdate = SettingKey<bool>(
     _SettingBoxKey.autoUpdate,
+    true,
+    group: SettingGroup.update,
+  );
+  static const checkPluginUpdateOnStartup = SettingKey<bool>(
+    'checkPluginUpdateOnStartup',
     true,
     group: SettingGroup.update,
   );
@@ -248,12 +250,12 @@ class SettingsKeys {
   );
   static const enableGitProxy = SettingKey<bool>(
     _SettingBoxKey.enableGitProxy,
-    false,
+    true,
     group: SettingGroup.proxy,
   );
   static const enableBangumiProxy = SettingKey<bool>(
     _SettingBoxKey.enableBangumiProxy,
-    false,
+    true,
     group: SettingGroup.proxy,
   );
   static const enableSystemProxy = SettingKey<bool>(
@@ -328,7 +330,12 @@ class SettingsKeys {
   );
   static const syncPlayEndPoint = SettingKey<String>(
     _SettingBoxKey.syncPlayEndPoint,
-    '127.0.0.1:8999',
+    defaultSyncPlayEndPoint,
+    group: SettingGroup.player,
+  );
+  static const syncPlayUserName = SettingKey<String>(
+    'syncPlayUserName',
+    '',
     group: SettingGroup.player,
   );
   static const androidEnableOpenSLES = SettingKey<bool>(
@@ -441,6 +448,18 @@ class SettingsKeys {
     true,
     group: SettingGroup.download,
   );
+  static const downloadDirectory = SettingKey<String>(
+    _SettingBoxKey.downloadDirectory,
+    '',
+    group: SettingGroup.download,
+  );
+  // macOS only: security-scoped bookmark that keeps downloadDirectory
+  // writable across app restarts under the sandbox.
+  static const downloadDirectoryBookmark = SettingKey<String>(
+    'downloadDirectoryBookmark',
+    '',
+    group: SettingGroup.download,
+  );
   static const shortcutDialogShown = SettingKey<bool>(
     _SettingBoxKey.shortcutDialogShown,
     false,
@@ -507,6 +526,7 @@ class SettingsKeys {
     hardwareDecoder,
     searchEnhanceEnable,
     autoUpdate,
+    checkPluginUpdateOnStartup,
     alwaysOntop,
     defaultPlaySpeed,
     defaultShortcutForwardPlaySpeed,
@@ -560,6 +580,7 @@ class SettingsKeys {
     exitBehavior,
     playerDebugMode,
     syncPlayEndPoint,
+    syncPlayUserName,
     androidEnableOpenSLES,
     androidVideoRenderer,
     androidAutoEnterPIP,
@@ -582,6 +603,8 @@ class SettingsKeys {
     downloadParallelEpisodes,
     downloadParallelSegments,
     downloadDanmaku,
+    downloadDirectory,
+    downloadDirectoryBookmark,
     shortcutDialogShown,
     bangumiSyncEnable,
     bangumiAccessToken,
@@ -604,10 +627,6 @@ class SettingsKeys {
   }
 
   SettingsKeys._();
-}
-
-String _resolveHardwareDecoderDefault(SettingContext context) {
-  return context.isAndroid ? 'mediacodec' : 'auto-safe';
 }
 
 // Historical Hive key names used by settings created before the typed registry.
@@ -696,6 +715,7 @@ class _SettingBoxKey {
       downloadParallelEpisodes = 'downloadParallelEpisodes',
       downloadParallelSegments = 'downloadParallelSegments',
       downloadDanmaku = 'downloadDanmaku',
+      downloadDirectory = 'downloadDirectory',
       shortcutDialogShown = 'shortcutDialogShown',
       bangumiSyncEnable = 'bangumiSyncEnable',
       bangumiAccessToken = 'bangumiAccessToken',
