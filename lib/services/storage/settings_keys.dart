@@ -148,6 +148,11 @@ class SettingsKeys {
     false,
     group: SettingGroup.danmaku,
   );
+  static const danmakuChConvert = SettingKey<int>(
+    'danmakuChConvert',
+    0,
+    group: SettingGroup.danmaku,
+  );
   static const danmakuArea = SettingKey<double>(
     _SettingBoxKey.danmakuArea,
     1.0,
@@ -235,7 +240,7 @@ class SettingsKeys {
   );
   static const showPlayerError = SettingKey<bool>(
     _SettingBoxKey.showPlayerError,
-    true,
+    false,
     group: SettingGroup.player,
   );
   static const oledEnhance = SettingKey<bool>(
@@ -258,6 +263,17 @@ class SettingsKeys {
     true,
     group: SettingGroup.proxy,
   );
+  static const imageAcceleration = SettingKey<String>(
+    'imageAcceleration',
+    'ech',
+    group: SettingGroup.proxy,
+  );
+  // An unset mode inherits the old mirror switch (enabled by default).
+  static const bangumiAcceleration = SettingKey<String>(
+    'bangumiAcceleration',
+    '',
+    group: SettingGroup.proxy,
+  );
   static const enableSystemProxy = SettingKey<bool>(
     _SettingBoxKey.enableSystemProxy,
     false,
@@ -266,11 +282,6 @@ class SettingsKeys {
   static const defaultStartupPage = SettingKey<String>(
     _SettingBoxKey.defaultStartupPage,
     '/tab/popular/',
-    group: SettingGroup.interface,
-  );
-  static const isWideScreen = SettingKey<bool>(
-    _SettingBoxKey.isWideScreen,
-    false,
     group: SettingGroup.interface,
   );
   static const webDavEnable = SettingKey<bool>(
@@ -287,6 +298,26 @@ class SettingsKeys {
     _SettingBoxKey.webDavEnableCollect,
     false,
     group: SettingGroup.webdav,
+  );
+  static const webDavEnableDanmakuShield = SettingKey<bool>(
+    'webDavEnableDanmakuShield',
+    false,
+    group: SettingGroup.webdav,
+  );
+  static const danmakuShieldSyncDeviceId = SettingKey<String>(
+    'danmakuShieldSyncDeviceId',
+    '',
+    group: SettingGroup.sync,
+  );
+  static const danmakuShieldSyncState = SettingKey<String>(
+    'danmakuShieldSyncState',
+    '',
+    group: SettingGroup.sync,
+  );
+  static const danmakuShieldSyncCorruptState = SettingKey<String>(
+    'danmakuShieldSyncCorruptState',
+    '',
+    group: SettingGroup.sync,
   );
   static const webDavURL = SettingKey<String>(
     _SettingBoxKey.webDavURL,
@@ -306,6 +337,12 @@ class SettingsKeys {
   static const lowMemoryMode = SettingKey<bool>(
     _SettingBoxKey.lowMemoryMode,
     false,
+    group: SettingGroup.player,
+  );
+  // Null preserves the legacy lowMemoryMode choice until a policy is selected.
+  static const lowMemoryPolicy = SettingKey<String?>(
+    'lowMemoryPolicy',
+    null,
     group: SettingGroup.player,
   );
   static const showWindowButton = SettingKey<bool>(
@@ -428,9 +465,9 @@ class SettingsKeys {
     true,
     group: SettingGroup.interface,
   );
-  static const showAnimeCounter = SettingKey<bool>(
-    _SettingBoxKey.showAnimeCounter,
-    false,
+  static const defaultCollectLayout = SettingKey<String>(
+    'defaultCollectLayout',
+    'list',
     group: SettingGroup.interface,
   );
   static const downloadParallelEpisodes = SettingKey<int>(
@@ -543,6 +580,7 @@ class SettingsKeys {
     danmakuBottom,
     danmakuMassive,
     danmakuDeduplication,
+    danmakuChConvert,
     danmakuArea,
     danmakuColor,
     danmakuDuration,
@@ -565,16 +603,22 @@ class SettingsKeys {
     displayMode,
     enableGitProxy,
     enableBangumiProxy,
+    imageAcceleration,
+    bangumiAcceleration,
     enableSystemProxy,
     defaultStartupPage,
-    isWideScreen,
     webDavEnable,
     webDavEnableHistory,
     webDavEnableCollect,
+    webDavEnableDanmakuShield,
+    danmakuShieldSyncDeviceId,
+    danmakuShieldSyncState,
+    danmakuShieldSyncCorruptState,
     webDavURL,
     webDavUsername,
     webDavPassword,
     lowMemoryMode,
+    lowMemoryPolicy,
     showWindowButton,
     useDynamicColor,
     exitBehavior,
@@ -599,7 +643,7 @@ class SettingsKeys {
     proxyUrl,
     proxyTestUrl,
     showRating,
-    showAnimeCounter,
+    defaultCollectLayout,
     downloadParallelEpisodes,
     downloadParallelSegments,
     downloadDanmaku,
@@ -678,9 +722,6 @@ class _SettingBoxKey {
       enableBangumiProxy = 'enableBangumiProxy',
       enableSystemProxy = 'enableSystemProxy',
       defaultStartupPage = 'defaultStartupPage',
-
-      /// Deprecated
-      isWideScreen = 'isWideScreen',
       webDavEnable = 'webDavEnable',
       webDavEnableHistory = 'webDavEnableHistory',
       webDavEnableCollect = 'webDavEnableCollect',
@@ -711,7 +752,6 @@ class _SettingBoxKey {
       proxyUrl = 'proxyUrl',
       proxyTestUrl = 'proxyTestUrl',
       showRating = 'showRating',
-      showAnimeCounter = 'showAnimeCounter',
       downloadParallelEpisodes = 'downloadParallelEpisodes',
       downloadParallelSegments = 'downloadParallelSegments',
       downloadDanmaku = 'downloadDanmaku',
